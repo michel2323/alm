@@ -19,18 +19,30 @@ module alm
 using ReverseDiff
 using LinearAlgebra
 using Printf
-function lagrangian(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
+function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
     # f is the Lagrangian: L(x) = t(x) + lambda'*penalty(x) +
     # 0.5*c||penalty(x)||^2
     # g is the gradient of the lagrangian
     # h is the hessian
+    function psi(t, sigma, mu)
+        if t - sigma/mu <= 0 
+            return -sigma*t + t^2*mu/2
+        else
+            return - sigma^2/(2*mu)
+        end
+    end
     function f(x)
-    ret = lambda[2]*(x[4]^2 + x[1] - 1.0) - (466523.0*log((x[1] + x[2] - 103.0/100.0)/((13.0*x[1])/100.0 + (13*x[2])/100.0 - 4.0/25.0)))/50.0 
-    ret -= (225218.0*log((x[1] - 103.0/100.0)/(x[1] + (93.0*x[2])/100.0 - 103.0/100.0)))/25.0 
-    ret -= lambda[6]*(- x[8]^2 + x[1] + x[2]) - (820437.0*log(-103.0/(100.0*((91.0*x[1])/100.0 - 103/100.0))))/100.0 
-    ret += lambda[4]*(x[6]^2 + x[2] - 1.0) + (c*((x[4]^2 + x[1] - 1)^2 + (x[6]^2 + x[2] - 1)^2 + (- x[3]^2 + x[1])^2 + (- x[5]^2 + x[2])^2 + (x[7]^2 + x[1] + x[2] - 1)^2 + (- x[8]^2 + x[1] + x[2])^2))/2.0 
-    ret += lambda[1]*(- x[3]^2 + x[1]) 
-    ret += lambda[3]*(- x[5]^2 + x[2]) - lambda[5]*(x[7]^2 + x[1] + x[2] - 1.0)
+        ret = x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] # f(x)
+        ret += -(sum(el^2 for el in x)-40)*lambda[1] + mu/2 * (sum(el^2 for el in x)-40)^2# only equality constraint
+        ret += psi(prod(el for el in x) - 25, lambda[2], mu)
+        ret += psi(x[1] - 1, lambda[3], mu)
+        ret += psi(x[2] - 1, lambda[4], mu)
+        ret += psi(x[3] - 1, lambda[5], mu)
+        ret += psi(x[4] - 1, lambda[6], mu)
+        ret += psi(5 - x[1], lambda[7], mu)
+        ret += psi(5 - x[2], lambda[8], mu)
+        ret += psi(5 - x[3], lambda[9], mu)
+        ret += psi(5 - x[4], lambda[10], mu)
     end
 
     g = x -> ReverseDiff.gradient(f,x)
@@ -39,34 +51,37 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
     f,g,h
 end
 
-function normGradientLag(func, x::Vector{Float64},lambda::Vector{Float64},c::Float64)
+function normGradientLag(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
     # Evalue la fonction en xcurrent
-    f,g,h = func( x, lambda, c)
+    f,g,h = lagrangian(x, lambda, c)
     # calcule de la norme du gradient au point courant
     valueNG = norm(g(x))
 end
 
-function newton(func, x::Vector{Float64},lambda::Vector{Float64},c::Float64, epsilon)
+function newton(x::Vector{Float64},lambda::Vector{Float64},c::Float64, epsilon; verbose = true)
     # Function which gives the steepest descent according to Newton's method
     # INPUT: fonction = name of the file containing the function of interest
     #        x = point at which we evaluate the 
     #        lambda = dual variable at which we evaluate the Lagrangian
     #        c = penalty value of the Lagrangian
     # OUTPUT: d = steepest direction according to Newton's method
-    f,g,h = func(x, lambda, c)
+    f,g,h = lagrangian(x, lambda, c)
     res = 1e16
     iter = 0
-    while res > epsilon
+    while norm(g(x)) > epsilon
         new_x = x - inv(h(x))*g(x)
         res = norm(new_x - x)
         x = new_x
         iter+=1
     end
-    println("Newton iterations ", iter)
+    if verbose == true
+        println("Newton iterations ", iter)
+        println("Gradient ", norm(g(x)))
+    end
     x
 end
 
-function solve(param)
+function solve(param;verbose = true)
     #  Function implementing the augmented Lagrangian algorithm of the
     #  Bierlaire's book.
     #  INPUTS: - fct: string name of the file containing Lagrangians (function,
@@ -99,47 +114,68 @@ function solve(param)
     eta0 = eta
     eta = eta/c^alpha
     fpen = pen(x)
-    k = 1
+    k = 0
     # - Iterations
-    tStart = 0.0
-    while (normGradientLag(lagrangian, x, lambda, 0.0) > epsilon2 || norm(fpen)^2 > epsilon2) && k<maxiter
+    while (normGradientLag(x, lambda, c) > epsilon2 || norm(fpen)^2 > epsilon2) && k<maxiter
         # - Linesearch
-        x = newton(lagrangian, x, lambda, c, epsilon)
+        x = newton(x, lambda, c, epsilon, verbose=verbose)
         fpen = pen(x)
         
         # - Updating dual variables and precision of the linesearch
-        if (norm(fpen) <= eta)
-            lambda = lambda + c*fpen
-            epsilon = epsilon/c
-            eta = eta/c^beta
-        else
-            c = tau*c
-            epsilon = epsilon0/c
-            eta = eta0/c^alpha
-        end
+        # if (norm(fpen) <= eta)
+            lambda = lambda - c*fpen
+            # c = c*1.2
+            # epsilon = epsilon/c
+            # eta = eta/c^beta
+        # else
+            # epsilon = epsilon0/c
+            # eta = eta0/c^alpha
+        # end
         k = k+1
         
         # - Display of the results at each iteration
+        if verbose == true
+            println("")
+            println("Iteration: ", k)
+            println("c: ", c)
+            println("epsilon: ", epsilon)
+            println("pen = ", fpen)
+            println("lambda = ", lambda)
+            println("x= ", x)
+            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, c))
+            println("Value of the Constraint norm: ", norm(fpen))
+            println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
+        end
+    end
+    if verbose == false
         println("")
         println("Iteration: ", k)
-        println("Value of the Lagrangian Gradient norm: ", normGradientLag(lagrangian, x, lambda, 0.0))
+        println("c: ", c)
+        println("epsilon: ", epsilon)
+        println("pen = ", fpen)
+        println("lambda = ", lambda)
+        println("x= ", x)
+        println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, c))
         println("Value of the Constraint norm: ", norm(fpen))
+        println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
     end
-    println("x: ", x)
-    println("x: ", lagrangian(x, zeros(Float64,6), 0.0)[1](x))
     x, lambda
 end
 
 function pen(x::Vector{Float64})
 # h is a vector containing the value of the different penalty functions for
 # a given x
-    h = Array{Float64,1}(undef, 6)
-    h[1] = x[1] -x[3]^2
-    h[2] = x[1] +x[4]^2-1.0
-    h[3] = x[2] -x[5]^2
-    h[4] = x[2] +x[6]^2-1.0
-    h[5] = 1.0-x[1]-x[2] -x[7]^2
-    h[6] = 1.0-x[1]-x[2] +x[8]^2-1.0
+    h = Array{Float64,1}(undef, 10)
+    h[1] = sum(el^2 for el in x) - 40
+    h[2] = (prod(el for el in x) - 25)
+    h[3] = x[1] - 1
+    h[4] = x[2] - 1
+    h[5] = x[3] - 1
+    h[6] = x[4] - 1
+    h[7] = 5 - x[1]
+    h[8] = 5 - x[2]
+    h[9] = 5 - x[3]
+    h[10] = 5 - x[4]
     h
 end
 
@@ -154,9 +190,8 @@ mutable struct Params
     beta::Float64
     epsilon::Float64
     epsilon2::Float64
-    edit::Int64
     function Params()
-        new(0,nothing,0,0.0,nothing,0,0.0,0.0,0.0,0.0,0)
+        new(0,nothing,0,0.0,nothing,0,0.0,0.0,0.0,0.0)
     end
 end
 end
@@ -167,15 +202,16 @@ using .alm
 #  on a typical example
 # - Parameters for test
 param = alm.Params()
-param.maxiter = 2000 # maximum ALM iterations
-param.lambda = Array([1., 1., 1., 1., 1., 1.])
-param.c = 100.0
+param.maxiter = 100# maximum ALM iterations
+param.lambda = ones(Float64,10)
+param.c = 1000
 param.eta = 0.1 * 10.0^(0.1)
-param.x = Array([0.7, 0.2, 0.1, sqrt(0.3), sqrt(0.2), sqrt(0.8), sqrt(0.1), sqrt(0.9)])
+param.x = [1.000, 4.743, 3.821, 1.379]
 param.tau = 100
 param.alpha = 0.1
 param.beta = 0.9
 param.epsilon2 = 0.5
-param.edit = 2
 # - Solving the problem 
-x, lambda = alm.solve(param)
+println("lagrangian: ", alm.lagrangian(x, zeros(Float64,10), 10000.0)[1](x))
+println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
+x, lambda = alm.solve(param; verbose = true)
