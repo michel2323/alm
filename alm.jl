@@ -104,7 +104,7 @@ function solve(param;verbose = true)
     lambda = param.lambda
     c = param.c
     eta = param.eta
-    x = param.x
+    x = param.x0
     tau = param.tau
     alpha = param.alpha
     beta = param.beta
@@ -184,7 +184,7 @@ mutable struct Params
     lambda::Union{Vector{Float64},Nothing}
     c::Float64
     eta::Float64
-    x::Union{Vector{Float64},Nothing}
+    x0::Union{Vector{Float64},Nothing}
     tau::Int64
     alpha::Float64
     beta::Float64
@@ -206,12 +206,13 @@ param.maxiter = 100# maximum ALM iterations
 param.lambda = ones(Float64,10)
 param.c = 1000
 param.eta = 0.1 * 10.0^(0.1)
-param.x = [1.000, 4.743, 3.821, 1.379]
+param.x0 = [1.000, 4.743, 3.821, 1.379]
 param.tau = 100
 param.alpha = 0.1
 param.beta = 0.9
 param.epsilon2 = 0.5
 # - Solving the problem 
-println("lagrangian: ", alm.lagrangian(x, zeros(Float64,10), 10000.0)[1](x))
-println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
+x0 = param.x0
+println("lagrangian: ", alm.lagrangian(x0, zeros(Float64,10), 10000.0)[1](x0))
+println("objective: ", x0[1] * x0[4] * (x0[1] + x0[2] + x0[3]) + x0[3] )
 x, lambda = alm.solve(param; verbose = true)
