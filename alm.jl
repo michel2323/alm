@@ -1,3 +1,4 @@
+using Revise
 using PowerModels
 import InfrastructureModels
 import Memento
@@ -18,7 +19,7 @@ module alm
 using ReverseDiff
 using LinearAlgebra
 using Printf
-function Lagrangian1_2(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
+function lagrangian(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
     # f is the Lagrangian: L(x) = t(x) + lambda'*penalty(x) +
     # 0.5*c||penalty(x)||^2
     # g is the gradient of the lagrangian
@@ -65,7 +66,7 @@ function newton(func, x::Vector{Float64},lambda::Vector{Float64},c::Float64, eps
     x
 end
 
-function solve_AugLagran(fct,pen,param)
+function solve(param)
     #  Function implementing the augmented Lagrangian algorithm of the
     #  Bierlaire's book.
     #  INPUTS: - fct: string name of the file containing Lagrangians (function,
@@ -101,9 +102,9 @@ function solve_AugLagran(fct,pen,param)
     k = 1
     # - Iterations
     tStart = 0.0
-    while (normGradientLag(fct, x, lambda, 0.0) > epsilon2 || norm(fpen)^2 > epsilon2) && k<maxiter
+    while (normGradientLag(lagrangian, x, lambda, 0.0) > epsilon2 || norm(fpen)^2 > epsilon2) && k<maxiter
         # - Linesearch
-        x = newton(fct, x, lambda, c, epsilon)
+        x = newton(lagrangian, x, lambda, c, epsilon)
         fpen = pen(x)
         
         # - Updating dual variables and precision of the linesearch
@@ -121,15 +122,15 @@ function solve_AugLagran(fct,pen,param)
         # - Display of the results at each iteration
         println("")
         println("Iteration: ", k)
-        println("Value of the Lagrangian Gradient norm: ", normGradientLag(fct, x, lambda, 0.0))
+        println("Value of the Lagrangian Gradient norm: ", normGradientLag(lagrangian, x, lambda, 0.0))
         println("Value of the Constraint norm: ", norm(fpen))
     end
     println("x: ", x)
-    println("x: ", fct(x, zeros(Float64,6), 0.0)[1](x))
+    println("x: ", lagrangian(x, zeros(Float64,6), 0.0)[1](x))
     x, lambda
 end
 
-function pen1_2(x::Vector{Float64})
+function pen(x::Vector{Float64})
 # h is a vector containing the value of the different penalty functions for
 # a given x
     h = Array{Float64,1}(undef, 6)
@@ -166,7 +167,7 @@ using .alm
 #  on a typical example
 # - Parameters for test
 param = alm.Params()
-param.maxiter = 200000
+param.maxiter = 2000 # maximum ALM iterations
 param.lambda = Array([1., 1., 1., 1., 1., 1.])
 param.c = 100.0
 param.eta = 0.1 * 10.0^(0.1)
@@ -176,7 +177,5 @@ param.alpha = 0.1
 param.beta = 0.9
 param.epsilon2 = 0.5
 param.edit = 2
-fct = alm.Lagrangian1_2
-pen = alm.pen1_2
 # - Solving the problem 
-x, lambda = alm.solve_AugLagran(fct,pen,param)
+x, lambda = alm.solve(param)
