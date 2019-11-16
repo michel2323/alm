@@ -20,10 +20,6 @@ using ReverseDiff
 using LinearAlgebra
 using Printf
 function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
-    # f is the Lagrangian: L(x) = t(x) + lambda'*penalty(x) +
-    # 0.5*c||penalty(x)||^2
-    # g is the gradient of the lagrangian
-    # h is the hessian
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
             return -sigma*t + t^2*mu/2
@@ -33,8 +29,8 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
     end
     function f(x)
         ret = x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] # f(x)
-        ret += -(sum(el^2 for el in x)-40)*lambda[1] + mu/2 * (sum(el^2 for el in x)-40)^2# only equality constraint
-        ret += psi(prod(el for el in x) - 25, lambda[2], mu)
+        ret += -(sum(el^2 for el in x)-40)*lambda[1] + mu/2 * (sum(el^2 for el in x)-40)^2 # only equality constraint
+        ret += psi(prod(el for el in x) - 25, lambda[2], mu) # psi as defined on p. 524 of Nocedal, Wright
         ret += psi(x[1] - 1, lambda[3], mu)
         ret += psi(x[2] - 1, lambda[4], mu)
         ret += psi(x[3] - 1, lambda[5], mu)
@@ -51,13 +47,13 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
     f,g,h
 end
 
-function normGradientLag(x::Vector{Float64},lambda::Vector{Float64},c::Float64)
-    f,g,h = lagrangian(x, lambda, c)
+function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64)
+    f,g,h = lagrangian(x, lambda, mu)
     valueNG = norm(g(x))
 end
 
-function newton(x::Vector{Float64},lambda::Vector{Float64},c::Float64, epsilon; verbose = true)
-    f,g,h = lagrangian(x, lambda, c)
+function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, epsilon; verbose = true)
+    f,g,h = lagrangian(x, lambda, mu)
     res = 1e16
     iter = 0
     while norm(g(x)) > epsilon
@@ -77,49 +73,43 @@ function solve(param;verbose = true)
     # - Initialization
     maxiter = param.maxiter
     lambda = param.lambda
-    c = param.c
-    eta = param.eta
+    mu = param.mu
     x = param.x0
-    tau = param.tau
-    alpha = param.alpha
-    beta = param.beta
-    epsilon2 = param.epsilon2
-    epsilon = 1/c
-    epsilon0 = epsilon
-    eta0 = eta
-    eta = eta/c^alpha
     k = 0
     # - Iterations
-    while norm(lagrangian(x, lambda, c)[2](x)) > epsilon2 && k<maxiter
+    while norm(lagrangian(x, lambda, mu)[2](x)) > param.al_epsilon && k<maxiter
         # - Newton 
-        x = newton(x, lambda, c, epsilon, verbose=verbose)
+        x = newton(x, lambda, mu, param.newton_epsilon, verbose=verbose)
         
         # - Updating dual variables and precision of the linesearch
-        lambda = update_lambda(lambda, c, x)
+        lambda = update_lambda(lambda, mu, x)
+        if norm(violations(x)) < 1e-5
+            mu = mu * 10.0
+        end
         k = k+1
         
         # - Display of the results at each iteration
         if verbose == true
             println("")
             println("Iteration: ", k)
-            println("c: ", c)
-            println("epsilon: ", epsilon)
+            println("mu: ", mu)
             println("lambda = ", lambda)
             println("x= ", x)
-            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, c))
+            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu))
             println("Value of the Constraint norm: ", violations(x))
+            println("Hessian: ", lagrangian(x, lambda, mu)[3](x))
             println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
         end
     end
     if verbose == false
         println("")
-        println("Iteration: ", k)
-        println("c: ", c)
-        println("epsilon: ", epsilon)
+        println("Total iterations: ", k)
+        println("mu: ", mu)
         println("lambda = ", lambda)
         println("x= ", x)
-        println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, c))
+        println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu))
         println("Value of the Constraint norm: ", violations(x))
+        println("Hessian: ", lagrangian(x, lambda, mu)[3](x))
         println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
     end
     x, lambda
@@ -130,7 +120,7 @@ function update_lambda(lambda::Vector{Float64}, mu::Float64, x::Vector{Float64})
 # a given x
     h = Array{Float64,1}(undef, 10)
     # Equalities
-    h[1] = sum(el^2 for el in x) - 40
+    h[1] = lambda[1] - mu * (sum(el^2 for el in x) - 40)
     # Inequalities
     h[2] = update_lambda(lambda[2], mu, (prod(el for el in x) - 25))
     h[3] = update_lambda(lambda[3], mu, x[1] - 1)
@@ -142,6 +132,14 @@ function update_lambda(lambda::Vector{Float64}, mu::Float64, x::Vector{Float64})
     h[9] = update_lambda(lambda[9], mu, 5 - x[3])
     h[10] = update_lambda(lambda[10], mu, 5 - x[4])
     h
+end
+
+function update_lambda(lambda::Float64, mu::Float64, c::Float64)
+    if -c + lambda/mu <= 0 
+        return 0
+    else
+        return lambda - mu*c
+    end
 end
 
 function ineq_violation(f)
@@ -169,27 +167,15 @@ function violations(x::Vector{Float64})
     c
 end
 
-function update_lambda(lambda::Float64, mu::Float64, c::Float64)
-    if -c + lambda/mu <= 0 
-        return 0
-    else
-        return lambda - mu*c
-    end
-end
-
 mutable struct Params
     maxiter::Int64
     lambda::Union{Vector{Float64},Nothing}
-    c::Float64
-    eta::Float64
+    mu::Float64
     x0::Union{Vector{Float64},Nothing}
-    tau::Int64
-    alpha::Float64
-    beta::Float64
-    epsilon::Float64
-    epsilon2::Float64
+    newton_epsilon::Float64
+    al_epsilon::Float64 #
     function Params()
-        new(0,nothing,0,0.0,nothing,0,0.0,0.0,0.0,0.0)
+        new(0,nothing,0.0,nothing,0.0,0.0)
     end
 end
 end
@@ -202,14 +188,11 @@ using .alm
 param = alm.Params()
 param.maxiter = 1000# maximum ALM iterations
 param.lambda = ones(Float64,10)
-param.c = 10
-param.eta = 0.1 * 10.0^(0.1)
-param.x0 = [1.000, 4.743, 3.821, 1.379]
-# param.x0 = [1.000, 5.0, 5.0, 1.0]
-param.tau = 100
-param.alpha = 0.1
-param.beta = 0.9
-param.epsilon2 = 0.5
+param.mu = 1.0
+# param.x0 = [1.000, 4.743, 3.821, 1.379]
+param.x0 = [1.000, 5.0, 5.0, 1.0]
+param.al_epsilon = 1e-3
+param.newton_epsilon = 1e-7
 # - Solving the problem 
 x0 = param.x0
 println("lagrangian: ", alm.lagrangian(x0, zeros(Float64,10), 10000.0)[1](x0))
