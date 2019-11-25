@@ -902,16 +902,16 @@ function MOI.optimize!(model::Optimizer)
         [info.dual_start for info in model.quadratic_eq_constraints];
         model.nlp_dual_start
     ]
-    model.inner.mult_g = [start === nothing ? 0.0 : start
-                          for start in mult_g_start]
-    model.inner.mult_x_L = [v.lower_bound_dual_start === nothing ? 0.0 : v.lower_bound_dual_start
-                            for v in model.variable_info]
-    model.inner.mult_x_U = [v.upper_bound_dual_start === nothing ? 0.0 : v.lower_bound_dual_start
-                            for v in model.variable_info]
+    # model.inner.mult_g = [start === nothing ? 0.0 : start
+    #                       for start in mult_g_start]
+    # model.inner.mult_x_L = [v.lower_bound_dual_start === nothing ? 0.0 : v.lower_bound_dual_start
+    #                         for v in model.variable_info]
+    # model.inner.mult_x_U = [v.upper_bound_dual_start === nothing ? 0.0 : v.lower_bound_dual_start
+    #                         for v in model.variable_info]
 
-    for (name, value) in model.options
-        addOption(model.inner, name, value)
-    end
+    # for (name, value) in model.options
+    #     addOption(model.inner, name, value)
+    # end
     solveProblem(model.inner)
 
     model.solve_time = time() - start_time
@@ -922,41 +922,8 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
     if model.inner === nothing
         return MOI.OPTIMIZE_NOT_CALLED
     end
-    status = ApplicationReturnStatus[model.inner.status]
-    if status == :Solve_Succeeded || status == :Feasible_Point_Found
+    if model.inner.status == :LOCALLY_SOLVED
         return MOI.LOCALLY_SOLVED
-    elseif status == :Infeasible_Problem_Detected
-        return MOI.LOCALLY_INFEASIBLE
-    elseif status == :Solved_To_Acceptable_Level
-        return MOI.ALMOST_LOCALLY_SOLVED
-    elseif status == :Search_Direction_Becomes_Too_Small
-        return MOI.NUMERICAL_ERROR
-    elseif status == :Diverging_Iterates
-        return MOI.NORM_LIMIT
-    elseif status == :User_Requested_Stop
-        return MOI.INTERRUPTED
-    elseif status == :Maximum_Iterations_Exceeded
-        return MOI.ITERATION_LIMIT
-    elseif status == :Maximum_CpuTime_Exceeded
-        return MOI.TIME_LIMIT
-    elseif status == :Restoration_Failed
-        return MOI.NUMERICAL_ERROR
-    elseif status == :Error_In_Step_Computation
-        return MOI.NUMERICAL_ERROR
-    elseif status == :Invalid_Option
-        return MOI.INVALID_OPTION
-    elseif status == :Not_Enough_Degrees_Of_Freedom
-        return MOI.INVALID_MODEL
-    elseif status == :Invalid_Problem_Definition
-        return MOI.INVALID_MODEL
-    elseif status == :Invalid_Number_Detected
-        return MOI.INVALID_MODEL
-    elseif status == :Unrecoverable_Exception
-        return MOI.OTHER_ERROR
-    elseif status == :NonIpopt_Exception_Thrown
-        return MOI.OHTER_ERROR
-    elseif status == :Insufficient_Memory
-        return MOI.MEMORY_LIMIT
     else
         error("Unrecognized Ipopt status $status")
     end
@@ -971,8 +938,8 @@ function MOI.get(model::Optimizer, ::MOI.ResultCount)
     return (model.inner !== nothing) ? 1 : 0
 end
 
-function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
-    if !(1 <= attr.N <= MOI.get(model, MOI.ResultCount()))
+function MOI.get(model::Optimizer, ::MOI.PrimalStatus)
+    if model.inner === nothing
         return MOI.NO_SOLUTION
     end
     status = ApplicationReturnStatus[model.inner.status]
@@ -991,8 +958,8 @@ function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
     end
 end
 
-function MOI.get(model::Optimizer, attr::MOI.DualStatus)
-    if !(1 <= attr.N <= MOI.get(model, MOI.ResultCount()))
+function MOI.get(model::Optimizer, ::MOI.DualStatus)
+    if model.inner === nothing
         return MOI.NO_SOLUTION
     end
     status = ApplicationReturnStatus[model.inner.status]
@@ -1012,8 +979,10 @@ function MOI.get(model::Optimizer, attr::MOI.DualStatus)
     end
 end
 
-function MOI.get(model::Optimizer, attr::MOI.ObjectiveValue)
-    MOI.check_result_index_bounds(model, attr)
+function MOI.get(model::Optimizer, ::MOI.ObjectiveValue)
+    if model.inner === nothing
+        error("ObjectiveValue not available.")
+    end
     scale = (model.sense == MOI.MAX_SENSE) ? -1 : 1
     return scale * model.inner.obj_val
 end
@@ -1021,8 +990,10 @@ end
 # TODO: This is a bit off, because the variable primal should be available
 # only after a solve. If model.inner is initialized but we haven't solved, then
 # the primal values we return do not have the intended meaning.
-function MOI.get(model::Optimizer, attr::MOI.VariablePrimal, vi::MOI.VariableIndex)
-    MOI.check_result_index_bounds(model, attr)
+function MOI.get(model::Optimizer, ::MOI.VariablePrimal, vi::MOI.VariableIndex)
+    if model.inner === nothing
+        error("VariablePrimal not available.")
+    end
     check_inbounds(model, vi)
     return model.inner.x[vi.value]
 end
@@ -1031,9 +1002,11 @@ macro define_constraint_primal(function_type, set_type, prefix)
     constraint_array = Symbol(string(prefix) * "_constraints")
     offset_function = Symbol(string(prefix) * "_offset")
     quote
-        function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
+        function MOI.get(model::Optimizer, ::MOI.ConstraintPrimal,
                          ci::MOI.ConstraintIndex{$function_type, $set_type})
-            MOI.check_result_index_bounds(model, attr)
+            if model.inner === nothing
+                error("ConstraintPrimal not available.")
+            end
             if !(1 <= ci.value <= length(model.$(constraint_array)))
                 error("Invalid constraint index ", ci.value)
             end
@@ -1055,10 +1028,12 @@ end
 @define_constraint_primal(MOI.ScalarQuadraticFunction{Float64},
                           MOI.EqualTo{Float64}, quadratic_eq)
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
+function MOI.get(model::Optimizer, ::MOI.ConstraintPrimal,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.LessThan{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintPrimal not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !has_upper_bound(model, vi)
@@ -1067,10 +1042,12 @@ function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
     return model.inner.x[vi.value]
 end
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
+function MOI.get(model::Optimizer, ::MOI.ConstraintPrimal,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.GreaterThan{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintPrimal not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !has_lower_bound(model, vi)
@@ -1079,10 +1056,12 @@ function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
     return model.inner.x[vi.value]
 end
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintPrimal,
+function MOI.get(model::Optimizer, ::MOI.ConstraintPrimal,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.EqualTo{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintPrimal not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !is_fixed(model, vi)
@@ -1095,9 +1074,11 @@ macro define_constraint_dual(function_type, set_type, prefix)
     constraint_array = Symbol(string(prefix) * "_constraints")
     offset_function = Symbol(string(prefix) * "_offset")
     quote
-        function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
+        function MOI.get(model::Optimizer, ::MOI.ConstraintDual,
                          ci::MOI.ConstraintIndex{$function_type, $set_type})
-            MOI.check_result_index_bounds(model, attr)
+            if model.inner === nothing
+                error("ConstraintDual not available.")
+            end
             if !(1 <= ci.value <= length(model.$(constraint_array)))
                 error("Invalid constraint index ", ci.value)
             end
@@ -1121,10 +1102,12 @@ end
 @define_constraint_dual(MOI.ScalarQuadraticFunction{Float64},
                           MOI.EqualTo{Float64}, quadratic_eq)
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
+function MOI.get(model::Optimizer, ::MOI.ConstraintDual,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.LessThan{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintDual not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !has_upper_bound(model, vi)
@@ -1134,10 +1117,12 @@ function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
     return -1 * model.inner.mult_x_U[vi.value]
 end
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
+function MOI.get(model::Optimizer, ::MOI.ConstraintDual,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.GreaterThan{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintDual not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !has_lower_bound(model, vi)
@@ -1146,10 +1131,12 @@ function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
     return model.inner.mult_x_L[vi.value]
 end
 
-function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
+function MOI.get(model::Optimizer, ::MOI.ConstraintDual,
                  ci::MOI.ConstraintIndex{MOI.SingleVariable,
                                          MOI.EqualTo{Float64}})
-    MOI.check_result_index_bounds(model, attr)
+    if model.inner === nothing
+        error("ConstraintDual not available.")
+    end
     vi = MOI.VariableIndex(ci.value)
     check_inbounds(model, vi)
     if !is_fixed(model, vi)
@@ -1158,7 +1145,9 @@ function MOI.get(model::Optimizer, attr::MOI.ConstraintDual,
     return model.inner.mult_x_L[vi.value] - model.inner.mult_x_U[vi.value]
 end
 
-function MOI.get(model::Optimizer, attr::MOI.NLPBlockDual)
-    MOI.check_result_index_bounds(model, attr)
+function MOI.get(model::Optimizer, ::MOI.NLPBlockDual)
+    if model.inner === nothing
+        error("NLPBlockDual not available.")
+    end
     return -1 * model.inner.mult_g[(1 + nlp_constraint_offset(model)):end]
 end

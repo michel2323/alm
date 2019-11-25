@@ -3,22 +3,22 @@ using PowerModels
 import InfrastructureModels
 import Memento
 
-import Ipopt
-
-import JuMP
-
 
 import LinearAlgebra
 
 # Run using Ipopt
-# ipopt_solver = JuMP.with_optimizer(Ipopt.Optimizer, tol=1e-6, print_level=5)
+# ipopt_solver = JuMP.with_optimizer(APM.Optimizer, tol=1e-6, print_level=5)
 # pm = PowerModels.build_model("./data/matpower/case5.m", ACPPowerModel, PowerModels.post_opf) 
 # solution = PowerModels.optimize_model!(pm, ipopt_solver; solution_builder = PowerModels.solution_opf!)
 # @show solution["objective"]
+
+
 module alm
 using ReverseDiff
 using LinearAlgebra
 using Printf
+
+export Params
 function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
@@ -69,12 +69,12 @@ function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, epsilo
     x
 end
 
-function solve(param;verbose = true)
+function solveProblem(param;verbose = true)
     # - Initialization
     maxiter = param.maxiter
     lambda = param.lambda
     mu = param.mu
-    x = param.x0
+    x = param.x
     k = 0
     # - Iterations
     while norm(lagrangian(x, lambda, mu)[2](x)) > param.al_epsilon && k<maxiter
@@ -112,6 +112,8 @@ function solve(param;verbose = true)
         println("Hessian: ", lagrangian(x, lambda, mu)[3](x))
         println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
     end
+    param.status = :LOCALLY_SOLVED
+    param.x = x
     x, lambda
 end
 
@@ -167,34 +169,73 @@ function violations(x::Vector{Float64})
     c
 end
 
+function createProblem(n, x_L, x_U,
+    m, g_L, g_U,
+    nele_jac, nele_hess,
+    eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h = nothing)
+
+    param = Params()
+    param.maxiter = 1000# maximum ALM iterations
+    param.lambda = ones(Float64,10)
+    param.mu = 1.0
+    # param.x0 = [1.000, 4.743, 3.821, 1.379]
+    param.x = [1.000, 5.0, 5.0, 1.0]
+    param.al_epsilon = 1e-3
+    param.newton_epsilon = 1e-7
+    # param.model = model
+    # - Solving the problem 
+    x = param.x
+    return param
+end
+
 mutable struct Params
     maxiter::Int64
     lambda::Union{Vector{Float64},Nothing}
     mu::Float64
-    x0::Union{Vector{Float64},Nothing}
+    x::Union{Vector{Float64},Nothing}
     newton_epsilon::Float64
     al_epsilon::Float64 #
+    status::Symbol
     function Params()
-        new(0,nothing,0.0,nothing,0.0,0.0)
+        new(0,nothing,0.0,nothing,0.0,0.0, :Empty)
     end
 end
+include("MOI_wrapper.jl")
 end
 
 using .alm
+
+using Ipopt
+
+using JuMP
 # - Augmented Lagrangian minimization
 #  This file is an example of how to use the augmented Lagragngian algorithm
 #  on a typical example
 # - Parameters for test
-param = alm.Params()
-param.maxiter = 1000# maximum ALM iterations
-param.lambda = ones(Float64,10)
-param.mu = 1.0
-# param.x0 = [1.000, 4.743, 3.821, 1.379]
-param.x0 = [1.000, 5.0, 5.0, 1.0]
-param.al_epsilon = 1e-3
-param.newton_epsilon = 1e-7
-# - Solving the problem 
-x0 = param.x0
-println("lagrangian: ", alm.lagrangian(x0, zeros(Float64,10), 10000.0)[1](x0))
-println("objective: ", x0[1] * x0[4] * (x0[1] + x0[2] + x0[3]) + x0[3] )
-x, lambda = alm.solve(param; verbose = false)
+# model = Model(with_optimizer(Ipopt.Optimizer))
+model = Model(with_optimizer(alm.Optimizer))
+@variable(model, 1.0 <= x[1:4] <= 5.0)
+@NLconstraint(model, prod(x[i] for i in 1:4) >= 25.0)
+@NLconstraint(model, sum(x[i]^2 for i in 1:4) == 40.0)
+@NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
+set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
+# @show model.inner
+
+optimize!(model)
+
+# @show model.nner
+value.(x)
+# param = alm.Params()
+# param.maxiter = 1000# maximum ALM iterations
+# param.lambda = ones(Float64,10)
+# param.mu = 1.0
+# # param.x0 = [1.000, 4.743, 3.821, 1.379]
+# param.x0 = [1.000, 5.0, 5.0, 1.0]
+# param.al_epsilon = 1e-3
+# param.newton_epsilon = 1e-7
+# param.model = model
+# # - Solving the problem 
+# x0 = param.x0
+# println("lagrangian: ", alm.lagrangian(x0, zeros(Float64,10), 10000.0)[1](x0))
+# println("objective: ", x0[1] * x0[4] * (x0[1] + x0[2] + x0[3]) + x0[3] )
+# x, lambda = alm.solve(param; verbose = false)
