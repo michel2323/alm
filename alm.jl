@@ -17,14 +17,45 @@ module alm
 using ReverseDiff
 using LinearAlgebra
 using Printf
+using SparseArrays
 
 export Params
-function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
+
+mutable struct Params
+    maxiter::Int64
+    lambda::Union{Vector{Float64},Nothing}
+    mu::Float64
+    x::Union{Vector{Float64},Nothing}
+    newton_epsilon::Float64
+    al_epsilon::Float64 #
+    status::Symbol
+
+    # Callbacks
+    eval_f::Function
+    eval_g::Function
+    eval_grad_f::Function
+    eval_jac_g::Function
+    eval_h::Function  # Can be nothing
+    function Params(eval_f::Function, eval_g::Function, eval_grad_f::Function, 
+     eval_jac_g::Function, eval_h::Function)
+        new(0,nothing,0.0,nothing,0.0,0.0, :Empty, eval_f, eval_g, eval_grad_f,
+            eval_jac_g, eval_h)
+    end
+end
+
+function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, param::Params)
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
             return -sigma*t + t^2*mu/2
         else
             return - sigma^2/(2*mu)
+        end
+    end
+    function grad_psi(t, sigma, mu)
+        if t - sigma/mu <= 0 
+            return -sigma + t*mu
+        else
+            return 0.0
         end
     end
     function f(x)
@@ -41,22 +72,68 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64)
         ret += psi(5 - x[4], lambda[10], mu)
     end
 
+    function moif(x)
+        ret = param.eval_f(x)
+        g = zeros(Float64, 10)
+        param.eval_g(x, g)
+        ret += -g[1]*lambda[1] + mu/2 * g[1]^2 # only equality constraint
+        ret += psi(g[2], lambda[2], mu) # psi as defined on p. 524 of Nocedal, Wright
+        ret += psi(g[3], lambda[3], mu)
+        ret += psi(g[4], lambda[4], mu)
+        ret += psi(g[5], lambda[5], mu)
+        ret += psi(g[6], lambda[6], mu)
+        ret += psi(-g[7], lambda[7], mu) # <= requires switch of sign
+        ret += psi(-g[8], lambda[8], mu)
+        ret += psi(-g[9], lambda[9], mu)
+        ret += psi(-g[10], lambda[10], mu)
+    end
+
+    function moig(x)
+        grad_f = zeros(Float64, 4)
+        param.eval_grad_f(x,grad_f)
+        ret = grad_f
+        rows = zeros(Float64, 10)
+        cols = zeros(Float64, 4)
+        njacobian = param.eval_jac_g(nothing, :Structure, nothing, nothing, nothing)
+        rows = zeros(Float64, njacobian)
+        cols = zeros(Float64, njacobian)
+        values = zeros(Float64, njacobian)
+        param.eval_jac_g(x, :Values, rows, cols, values)
+        jac_g = sparse(rows, cols, values)
+        g = zeros(Float64, 10)
+        param.eval_g(x, g)
+
+        ret += (-lambda[1] + mu*g[1]) * Array(jac_g[1,:])
+        ret += grad_psi(g[2], lambda[2], mu) * Array(jac_g[2,:])
+        ret += grad_psi(g[3], lambda[3], mu) * Array(jac_g[3,:])
+        ret += grad_psi(g[4], lambda[4], mu) * Array(jac_g[4,:])
+        ret += grad_psi(g[5], lambda[5], mu) * Array(jac_g[5,:])
+        ret += grad_psi(g[6], lambda[6], mu) * Array(jac_g[6,:])
+        ret += -grad_psi(-g[7], lambda[7], mu) * Array(jac_g[7,:])
+        ret += -grad_psi(-g[8], lambda[8], mu) * Array(jac_g[8,:])
+        ret += -grad_psi(-g[9], lambda[9], mu) * Array(jac_g[9,:])
+        ret += -grad_psi(-g[10], lambda[10], mu) * Array(jac_g[10,:])
+    end
+
     g = x -> ReverseDiff.gradient(f,x)
     h = x -> ReverseDiff.hessian(f,x)
 
-    f,g,h
+    moif,g,h,moig
 end
 
-function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64)
-    f,g,h = lagrangian(x, lambda, mu)
+function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param)
+    f,g,h = lagrangian(x, lambda, mu, param)
     valueNG = norm(g(x))
 end
 
-function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, epsilon; verbose = true)
-    f,g,h = lagrangian(x, lambda, mu)
+function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param::Params; verbose = true)
+    f,g,h, g_ = lagrangian(x, lambda, mu, param)
+    @show size(g(x))
+    @show g(x)
+    @show g_(x)
     res = 1e16
     iter = 0
-    while norm(g(x)) > epsilon
+    while norm(g(x)) > param.newton_epsilon
         new_x = x - inv(h(x))*g(x)
         res = norm(new_x - x)
         x = new_x
@@ -69,7 +146,7 @@ function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, epsilo
     x
 end
 
-function solveProblem(param;verbose = true)
+function solveProblem(param;verbose = false)
     # - Initialization
     maxiter = param.maxiter
     lambda = param.lambda
@@ -77,9 +154,9 @@ function solveProblem(param;verbose = true)
     x = param.x
     k = 0
     # - Iterations
-    while norm(lagrangian(x, lambda, mu)[2](x)) > param.al_epsilon && k<maxiter
+    while norm(lagrangian(x, lambda, mu, param)[2](x)) > param.al_epsilon && k<maxiter
         # - Newton 
-        x = newton(x, lambda, mu, param.newton_epsilon, verbose=verbose)
+        x = newton(x, lambda, mu, param, verbose=verbose)
         
         # - Updating dual variables and precision of the linesearch
         lambda = update_lambda(lambda, mu, x)
@@ -95,9 +172,9 @@ function solveProblem(param;verbose = true)
             println("mu: ", mu)
             println("lambda = ", lambda)
             println("x= ", x)
-            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu))
+            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
             println("Value of the Constraint norm: ", violations(x))
-            println("Hessian: ", lagrangian(x, lambda, mu)[3](x))
+            println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
             println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
         end
     end
@@ -107,9 +184,9 @@ function solveProblem(param;verbose = true)
         println("mu: ", mu)
         println("lambda = ", lambda)
         println("x= ", x)
-        println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu))
+        println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
         println("Value of the Constraint norm: ", violations(x))
-        println("Hessian: ", lagrangian(x, lambda, mu)[3](x))
+        println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
         println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
     end
     param.status = :LOCALLY_SOLVED
@@ -174,8 +251,8 @@ function createProblem(n, x_L, x_U,
     nele_jac, nele_hess,
     eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h = nothing)
 
-    param = Params()
-    param.maxiter = 1000# maximum ALM iterations
+    param = Params(eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h)
+    param.maxiter = 1# maximum ALM iterations
     param.lambda = ones(Float64,10)
     param.mu = 1.0
     # param.x0 = [1.000, 4.743, 3.821, 1.379]
@@ -188,18 +265,6 @@ function createProblem(n, x_L, x_U,
     return param
 end
 
-mutable struct Params
-    maxiter::Int64
-    lambda::Union{Vector{Float64},Nothing}
-    mu::Float64
-    x::Union{Vector{Float64},Nothing}
-    newton_epsilon::Float64
-    al_epsilon::Float64 #
-    status::Symbol
-    function Params()
-        new(0,nothing,0.0,nothing,0.0,0.0, :Empty)
-    end
-end
 include("MOI_wrapper.jl")
 end
 
@@ -214,14 +279,34 @@ using JuMP
 # - Parameters for test
 # model = Model(with_optimizer(Ipopt.Optimizer))
 model = Model(with_optimizer(alm.Optimizer))
-@variable(model, 1.0 <= x[1:4] <= 5.0)
-@NLconstraint(model, prod(x[i] for i in 1:4) >= 25.0)
+@variable(model, x[1:4])
 @NLconstraint(model, sum(x[i]^2 for i in 1:4) == 40.0)
+@NLconstraint(model, prod(x[i] for i in 1:4) >= 25.0)
+@NLconstraint(model, x[1] >= 1.0)
+@NLconstraint(model, x[2] >= 1.0)
+@NLconstraint(model, x[3] >= 1.0)
+@NLconstraint(model, x[4] >= 1.0)
+@NLconstraint(model, x[1] <= 5.0)
+@NLconstraint(model, x[2] <= 5.0)
+@NLconstraint(model, x[3] <= 5.0)
+@NLconstraint(model, x[4] <= 5.0)
 @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
 set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
 # @show model.inner
 
+# @show model
+# expr1 = objective_function_string(REPLMode, model)
+# expr2 = objective_function_string(IJuliaMode, model)
+# list = constraints_string(REPLMode, model)
+# model.moi_backend.optimizer.model.inner.eval_f = expr1
 optimize!(model)
+
+# @show expr1
+# @show typeof(expr1)
+# @show expr2
+# @show typeof(expr2)
+# @show list
+# @show typeof(list)
 
 # @show model.nner
 value.(x)

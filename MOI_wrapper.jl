@@ -821,11 +821,12 @@ function MOI.optimize!(model::Optimizer)
     # Jacobian callback
     function eval_jac_g_cb(x, mode, rows, cols, values)
         if mode == :Structure
+            return length(jacobian_sparsity)
+        else
             for i in 1:length(jacobian_sparsity)
                 rows[i] = jacobian_sparsity[i][1]
                 cols[i] = jacobian_sparsity[i][2]
             end
-        else
             eval_constraint_jacobian(model, values, x)
         end
     end
