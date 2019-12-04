@@ -836,11 +836,12 @@ function MOI.optimize!(model::Optimizer)
         function eval_h_cb(x, mode, rows, cols, obj_factor,
             lambda, values)
             if mode == :Structure
+                return length(hessian_sparsity)
+            else
                 for i in 1:length(hessian_sparsity)
                     rows[i] = hessian_sparsity[i][1]
                     cols[i] = hessian_sparsity[i][2]
                 end
-            else
                 obj_factor *= objective_scale
                 eval_hessian_lagrangian(model, values, x, obj_factor, lambda)
             end

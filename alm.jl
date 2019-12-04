@@ -43,6 +43,14 @@ mutable struct Params
     end
 end
 
+function trtofull(matrix)
+    matrix = matrix + matrix'
+    for i in 1:size(matrix,1)
+        matrix[i,i] = matrix[i,i]/2
+    end
+    matrix
+end
+
 function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, param::Params)
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
@@ -54,6 +62,13 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
     function grad_psi(t, sigma, mu)
         if t - sigma/mu <= 0 
             return -sigma + t*mu
+        else
+            return 0.0
+        end
+    end
+    function hess_psi(t, sigma, mu)
+        if t - sigma/mu <= 0 
+            return mu
         else
             return 0.0
         end
@@ -92,8 +107,6 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         grad_f = zeros(Float64, 4)
         param.eval_grad_f(x,grad_f)
         ret = grad_f
-        rows = zeros(Float64, 10)
-        cols = zeros(Float64, 4)
         njacobian = param.eval_jac_g(nothing, :Structure, nothing, nothing, nothing)
         rows = zeros(Float64, njacobian)
         cols = zeros(Float64, njacobian)
@@ -115,10 +128,65 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         ret += -grad_psi(-g[10], lambda[10], mu) * Array(jac_g[10,:])
     end
 
-    g = x -> ReverseDiff.gradient(f,x)
-    h = x -> ReverseDiff.hessian(f,x)
+    function moih(x)
 
-    moif,g,h,moig
+        # Hessian
+        nhessian = param.eval_h(nothing, :Structure, nothing, nothing, nothing, nothing, nothing)
+        hrows = zeros(Float64, nhessian)
+        hcols = zeros(Float64, nhessian)
+        hvalues = zeros(Float64, nhessian)
+        zero_lambda = zeros(Float64, 10)
+        param.eval_h(x, :Values, hrows, hcols, 1.0, zero_lambda, hvalues)
+        hess_f = sparse(hrows, hcols, hvalues)
+
+        # Jacobian
+        njacobian = param.eval_jac_g(nothing, :Structure, nothing, nothing, nothing)
+        jrows = zeros(Float64, njacobian)
+        jcols = zeros(Float64, njacobian)
+        jvalues = zeros(Float64, njacobian)
+        param.eval_jac_g(x, :Values, jrows, jcols, jvalues)
+        jac_g = sparse(jrows, jcols, jvalues)
+
+        # Function
+        g = zeros(Float64, 10)
+        param.eval_g(x, g)
+
+        # ret += (-lambda[1] + mu*g[1]) * Array(jac_g[1,:])
+        zero_lambda[1] = 1.0
+        param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
+        hes_g = sparse(hrows, hcols, hvalues)
+        ret1 = (-lambda[1] + mu*g[1]) * trtofull(hes_g)
+        ret2 = mu * jac_g[1,:] * jac_g[1,:]'
+        ret = ret1 .+ ret2 .+ trtofull(hess_f)
+        zero_lambda[1] = 0.0
+
+        for i in 2:6
+            zero_lambda[i] = 1.0
+            param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
+            hes_g = sparse(hrows, hcols, hvalues)
+            ret1 = grad_psi(g[i], lambda[i], mu) * Array(trtofull(hes_g))
+            ret2 = hess_psi(g[i], lambda[i], mu) * jac_g[i,:] * jac_g[i,:]' 
+            ret = ret .+ ret1 .+ ret2
+            zero_lambda[i] = 0.0
+        end
+
+        for i in 7:10
+            zero_lambda[i] = 1.0
+            param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
+            hes_g = sparse(hrows, hcols, hvalues)
+            ret1 = grad_psi(-g[i], lambda[i], mu) * Array(trtofull(hes_g))
+            ret2 = hess_psi(-g[i], lambda[i], mu) * jac_g[i,:] * jac_g[i,:]' 
+            ret = ret .+ ret1 .+ ret2
+            zero_lambda[i] = 0.0
+        end
+
+        ret  = Array(ret)
+    end
+
+    # g = x -> ReverseDiff.gradient(f,x)
+    # h = x -> ReverseDiff.hessian(f,x)
+
+    moif,moig,moih
 end
 
 function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param)
@@ -127,10 +195,7 @@ function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float6
 end
 
 function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param::Params; verbose = true)
-    f,g,h, g_ = lagrangian(x, lambda, mu, param)
-    @show size(g(x))
-    @show g(x)
-    @show g_(x)
+    f,g,h = lagrangian(x, lambda, mu, param)
     res = 1e16
     iter = 0
     while norm(g(x)) > param.newton_epsilon
@@ -252,7 +317,7 @@ function createProblem(n, x_L, x_U,
     eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h = nothing)
 
     param = Params(eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h)
-    param.maxiter = 1# maximum ALM iterations
+    param.maxiter = 1000# maximum ALM iterations
     param.lambda = ones(Float64,10)
     param.mu = 1.0
     # param.x0 = [1.000, 4.743, 3.821, 1.379]
