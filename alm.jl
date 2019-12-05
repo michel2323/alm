@@ -39,11 +39,13 @@ mutable struct Params
     get_eq_con::Function
     get_ieq_le_con::Function
     get_ieq_ge_con::Function
+    num_constraints::Int64
     function Params(eval_f::Function, eval_g::Function, eval_grad_f::Function, 
      eval_jac_g::Function, eval_h::Function, 
      get_eq_con::Function, get_ieq_le_con::Function, get_ieq_ge_con::Function)
+        num_constraints = length(get_eq_con()) + length(get_ieq_le_con()) + length(get_ieq_ge_con()) 
         new(0,nothing,0.0,nothing,0.0,0.0, :Empty, eval_f, eval_g, eval_grad_f,
-            eval_jac_g, eval_h, get_eq_con, get_ieq_le_con, get_ieq_ge_con)
+            eval_jac_g, eval_h, get_eq_con, get_ieq_le_con, get_ieq_ge_con, num_constraints)
     end
 end
 
@@ -56,7 +58,6 @@ function trtofull(matrix)
 end
 
 function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, param::Params)
-    num_constraints = length(param.get_eq_con()) + length(param.get_ieq_le_con()) + length(param.get_ieq_ge_con()) 
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
             return -sigma*t + t^2*mu/2
@@ -78,23 +79,10 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             return 0.0
         end
     end
-    function f(x)
-        ret = x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] # f(x)
-        ret += -(sum(el^2 for el in x)-40)*lambda[1] + mu/2 * (sum(el^2 for el in x)-40)^2 # only equality constraint
-        ret += psi(prod(el for el in x) - 25, lambda[2], mu) # psi as defined on p. 524 of Nocedal, Wright
-        ret += psi(x[1] - 1, lambda[3], mu)
-        ret += psi(x[2] - 1, lambda[4], mu)
-        ret += psi(x[3] - 1, lambda[5], mu)
-        ret += psi(x[4] - 1, lambda[6], mu)
-        ret += psi(5 - x[1], lambda[7], mu)
-        ret += psi(5 - x[2], lambda[8], mu)
-        ret += psi(5 - x[3], lambda[9], mu)
-        ret += psi(5 - x[4], lambda[10], mu)
-    end
 
     function moif(x)
         ret = param.eval_f(x)
-        g = zeros(Float64, num_constraints)
+        g = zeros(Float64, param.num_constraints)
         param.eval_g(x, g)
         for i in param.get_eq_con()
             ret += -g[i]*lambda[i] + mu/2 * g[i]^2 # only equality constraint
@@ -118,7 +106,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         values = zeros(Float64, njacobian)
         param.eval_jac_g(x, :Values, rows, cols, values)
         jac_g = sparse(rows, cols, values)
-        g = zeros(Float64, num_constraints)
+        g = zeros(Float64, param.num_constraints)
         param.eval_g(x, g)
 
         for i in param.get_eq_con()
@@ -140,7 +128,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         hrows = zeros(Float64, nhessian)
         hcols = zeros(Float64, nhessian)
         hvalues = zeros(Float64, nhessian)
-        zero_lambda = zeros(Float64, num_constraints)
+        zero_lambda = zeros(Float64, param.num_constraints)
         param.eval_h(x, :Values, hrows, hcols, 1.0, zero_lambda, hvalues)
         hess_f = sparse(hrows, hcols, hvalues)
 
@@ -153,7 +141,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         jac_g = sparse(jrows, jcols, jvalues)
 
         # Function
-        g = zeros(Float64, num_constraints)
+        g = zeros(Float64, param.num_constraints)
         param.eval_g(x, g)
         ret = 0
         # Equality constraints
@@ -227,14 +215,16 @@ function solveProblem(param;verbose = false)
     mu = param.mu
     x = param.x
     k = 0
+    constraints = similar(lambda)
     # - Iterations
     while norm(lagrangian(x, lambda, mu, param)[2](x)) > param.al_epsilon && k<maxiter
         # - Newton 
         x = newton(x, lambda, mu, param, verbose=verbose)
         
         # - Updating dual variables and precision of the linesearch
-        lambda = update_lambda(lambda, mu, x)
-        if norm(violations(x)) < 1e-5
+        param.eval_g(x, constraints)
+        lambda = update_lambda!(lambda, mu, x, constraints, param)
+        if norm(violations(x, constraints, param)) < 1e-5
             mu = mu * 10.0
         end
         k = k+1
@@ -247,7 +237,7 @@ function solveProblem(param;verbose = false)
             println("lambda = ", lambda)
             println("x= ", x)
             println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
-            println("Value of the Constraint norm: ", violations(x))
+            println("Value of the Constraint norm: ", violations(x, constraints, param))
             println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
             println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
         end
@@ -259,7 +249,7 @@ function solveProblem(param;verbose = false)
         println("lambda = ", lambda)
         println("x= ", x)
         println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
-        println("Value of the Constraint norm: ", violations(x))
+        println("Value of the Constraint norm: ", violations(x, constraints, param))
         println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
         println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
     end
@@ -268,23 +258,23 @@ function solveProblem(param;verbose = false)
     x, lambda
 end
 
-function update_lambda(lambda::Vector{Float64}, mu::Float64, x::Vector{Float64})
+function update_lambda!(lambda::Vector{Float64}, mu::Float64, x::Vector{Float64}, g::Vector{Float64}, param::Params)
 # h is a vector containing the value of the different penalty functions for
 # a given x
-    h = Array{Float64,1}(undef, 10)
     # Equalities
-    h[1] = lambda[1] - mu * (sum(el^2 for el in x) - 40)
+    for i in param.get_eq_con()
+        lambda[i] = lambda[i] - mu * g[i]
+    end
+
     # Inequalities
-    h[2] = update_lambda(lambda[2], mu, (prod(el for el in x) - 25))
-    h[3] = update_lambda(lambda[3], mu, x[1] - 1)
-    h[4] = update_lambda(lambda[4], mu, x[2] - 1)
-    h[5] = update_lambda(lambda[5], mu, x[3] - 1)
-    h[6] = update_lambda(lambda[6], mu, x[4] - 1)
-    h[7] = update_lambda(lambda[7], mu, 5 - x[1])
-    h[8] = update_lambda(lambda[8], mu, 5 - x[2])
-    h[9] = update_lambda(lambda[9], mu, 5 - x[3])
-    h[10] = update_lambda(lambda[10], mu, 5 - x[4])
-    h
+    for i in param.get_ieq_ge_con()
+        lambda[i] = update_lambda(lambda[i], mu, g[i])
+    end
+    
+    for i in param.get_ieq_le_con()
+        lambda[i] = update_lambda(lambda[i], mu, -g[i])
+    end
+    lambda
 end
 
 function update_lambda(lambda::Float64, mu::Float64, c::Float64)
@@ -304,19 +294,17 @@ function ineq_violation(f)
 end
 
 
-function violations(x::Vector{Float64})
-    c = Array{Float64}(undef, 10)
-    c[1] = sum(el^2 for el in x) - 40
-    # Inequalities
-    c[2] = ineq_violation(prod(el for el in x) - 25)
-    c[3] = ineq_violation(x[1] - 1)
-    c[4] = ineq_violation(x[2] - 1)
-    c[5] = ineq_violation(x[3] - 1)
-    c[6] = ineq_violation(x[4] - 1)
-    c[7] =  ineq_violation(5 - x[1])
-    c[8] =  ineq_violation(5 - x[2])
-    c[9] = ineq_violation( 5 - x[3])
-    c[10] =  ineq_violation(5 - x[4])
+function violations(x::Vector{Float64}, g::Vector{Float64}, param)
+    c = Array{Float64}(undef, param.num_constraints)
+    for i in param.get_eq_con()
+        c[i] = g[i]
+    end
+    for i in param.get_ieq_ge_con()
+        c[i] = ineq_violation(g[i])
+    end
+    for i in param.get_ieq_le_con()
+        c[i] = ineq_violation(-g[i])
+    end
     c
 end
 
