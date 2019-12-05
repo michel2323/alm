@@ -850,6 +850,22 @@ function MOI.optimize!(model::Optimizer)
         eval_h_cb = nothing
     end
 
+    list_eq_constraints = []
+    list_ieq_le_constraints = []
+    list_ieq_ge_constraints = []
+
+    function get_eq_con_cb()
+        return list_eq_constraints
+    end
+
+    function get_ieq_le_con_cb()
+        return list_ieq_le_constraints
+    end
+
+    function get_ieq_ge_con_cb()
+        return list_ieq_ge_constraints
+    end
+
     x_l = [v.lower_bound for v in model.variable_info]
     x_u = [v.upper_bound for v in model.variable_info]
 
@@ -862,7 +878,20 @@ function MOI.optimize!(model::Optimizer)
                             length(jacobian_sparsity),
                             length(hessian_sparsity),
                             eval_f_cb, eval_g_cb, eval_grad_f_cb, eval_jac_g_cb,
-                            eval_h_cb)
+                            eval_h_cb, get_eq_con_cb, get_ieq_le_con_cb, get_ieq_ge_con_cb)
+
+    num_nlp_constraints = length(model.nlp_data.constraint_bounds)
+    for (i,v) in enumerate(model.nlp_data.constraint_bounds)
+        if v.lower == 0 && v.upper == 0
+            push!(list_eq_constraints,i)
+        elseif v.lower == -Inf && v.upper == 0
+            push!(list_ieq_le_constraints, i)
+        elseif v.lower == 0 && v.upper == Inf
+            push!(list_ieq_ge_constraints, i)
+        else
+            error("This type of constraints is not supported.")
+        end
+    end
 
     # Ipopt crashes by default if NaN/Inf values are returned from the
     # evaluation callbacks. This option tells Ipopt to explicitly check for them

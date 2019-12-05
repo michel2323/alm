@@ -36,10 +36,14 @@ mutable struct Params
     eval_grad_f::Function
     eval_jac_g::Function
     eval_h::Function  # Can be nothing
+    get_eq_con::Function
+    get_ieq_le_con::Function
+    get_ieq_ge_con::Function
     function Params(eval_f::Function, eval_g::Function, eval_grad_f::Function, 
-     eval_jac_g::Function, eval_h::Function)
+     eval_jac_g::Function, eval_h::Function, 
+     get_eq_con::Function, get_ieq_le_con::Function, get_ieq_ge_con::Function)
         new(0,nothing,0.0,nothing,0.0,0.0, :Empty, eval_f, eval_g, eval_grad_f,
-            eval_jac_g, eval_h)
+            eval_jac_g, eval_h, get_eq_con, get_ieq_le_con, get_ieq_ge_con)
     end
 end
 
@@ -52,6 +56,7 @@ function trtofull(matrix)
 end
 
 function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, param::Params)
+    num_constraints = length(param.get_eq_con()) + length(param.get_ieq_le_con()) + length(param.get_ieq_ge_con()) 
     function psi(t, sigma, mu)
         if t - sigma/mu <= 0 
             return -sigma*t + t^2*mu/2
@@ -89,22 +94,22 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
 
     function moif(x)
         ret = param.eval_f(x)
-        g = zeros(Float64, 10)
+        g = zeros(Float64, num_constraints)
         param.eval_g(x, g)
-        ret += -g[1]*lambda[1] + mu/2 * g[1]^2 # only equality constraint
-        ret += psi(g[2], lambda[2], mu) # psi as defined on p. 524 of Nocedal, Wright
-        ret += psi(g[3], lambda[3], mu)
-        ret += psi(g[4], lambda[4], mu)
-        ret += psi(g[5], lambda[5], mu)
-        ret += psi(g[6], lambda[6], mu)
-        ret += psi(-g[7], lambda[7], mu) # <= requires switch of sign
-        ret += psi(-g[8], lambda[8], mu)
-        ret += psi(-g[9], lambda[9], mu)
-        ret += psi(-g[10], lambda[10], mu)
+        for i in param.get_eq_con()
+            ret += -g[i]*lambda[i] + mu/2 * g[i]^2 # only equality constraint
+        end
+        for i in param.get_ieq_ge_con()
+            ret += psi(g[i], lambda[i], mu) # psi as defined on p. 524 of Nocedal, Wright
+        end
+        for i in param.get_ieq_le_con()
+            ret += psi(-g[i], lambda[i], mu) # <= requires switch of sign
+        end
+        ret
     end
 
     function moig(x)
-        grad_f = zeros(Float64, 4)
+        grad_f = zeros(Float64, size(x))
         param.eval_grad_f(x,grad_f)
         ret = grad_f
         njacobian = param.eval_jac_g(nothing, :Structure, nothing, nothing, nothing)
@@ -113,19 +118,19 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         values = zeros(Float64, njacobian)
         param.eval_jac_g(x, :Values, rows, cols, values)
         jac_g = sparse(rows, cols, values)
-        g = zeros(Float64, 10)
+        g = zeros(Float64, num_constraints)
         param.eval_g(x, g)
 
-        ret += (-lambda[1] + mu*g[1]) * Array(jac_g[1,:])
-        ret += grad_psi(g[2], lambda[2], mu) * Array(jac_g[2,:])
-        ret += grad_psi(g[3], lambda[3], mu) * Array(jac_g[3,:])
-        ret += grad_psi(g[4], lambda[4], mu) * Array(jac_g[4,:])
-        ret += grad_psi(g[5], lambda[5], mu) * Array(jac_g[5,:])
-        ret += grad_psi(g[6], lambda[6], mu) * Array(jac_g[6,:])
-        ret += -grad_psi(-g[7], lambda[7], mu) * Array(jac_g[7,:])
-        ret += -grad_psi(-g[8], lambda[8], mu) * Array(jac_g[8,:])
-        ret += -grad_psi(-g[9], lambda[9], mu) * Array(jac_g[9,:])
-        ret += -grad_psi(-g[10], lambda[10], mu) * Array(jac_g[10,:])
+        for i in param.get_eq_con()
+            ret += (-lambda[i] + mu*g[i]) * jac_g[i,:]
+        end
+        for i in param.get_ieq_ge_con()
+            ret += grad_psi(g[i], lambda[i], mu) * jac_g[i,:]
+        end
+        for i in param.get_ieq_le_con()
+            ret += -grad_psi(-g[i], lambda[i], mu) * jac_g[i,:]
+        end
+        ret
     end
 
     function moih(x)
@@ -135,7 +140,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         hrows = zeros(Float64, nhessian)
         hcols = zeros(Float64, nhessian)
         hvalues = zeros(Float64, nhessian)
-        zero_lambda = zeros(Float64, 10)
+        zero_lambda = zeros(Float64, num_constraints)
         param.eval_h(x, :Values, hrows, hcols, 1.0, zero_lambda, hvalues)
         hess_f = sparse(hrows, hcols, hvalues)
 
@@ -148,19 +153,22 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         jac_g = sparse(jrows, jcols, jvalues)
 
         # Function
-        g = zeros(Float64, 10)
+        g = zeros(Float64, num_constraints)
         param.eval_g(x, g)
+        ret = 0
+        # Equality constraints
+        for i in param.get_eq_con()
+            zero_lambda[i] = 1.0
+            param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
+            hes_g = sparse(hrows, hcols, hvalues)
+            ret1 = (-lambda[i] + mu*g[i]) * trtofull(hes_g)
+            ret2 = mu * jac_g[i,:] * jac_g[i,:]'
+            ret = ret1 .+ ret2 .+ trtofull(hess_f)
+            zero_lambda[i] = 0.0
+        end
 
-        # ret += (-lambda[1] + mu*g[1]) * Array(jac_g[1,:])
-        zero_lambda[1] = 1.0
-        param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
-        hes_g = sparse(hrows, hcols, hvalues)
-        ret1 = (-lambda[1] + mu*g[1]) * trtofull(hes_g)
-        ret2 = mu * jac_g[1,:] * jac_g[1,:]'
-        ret = ret1 .+ ret2 .+ trtofull(hess_f)
-        zero_lambda[1] = 0.0
-
-        for i in 2:6
+        # Inequality GE (>=) constraints
+        for i in param.get_ieq_ge_con()
             zero_lambda[i] = 1.0
             param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
             hes_g = sparse(hrows, hcols, hvalues)
@@ -170,7 +178,8 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             zero_lambda[i] = 0.0
         end
 
-        for i in 7:10
+        # Inequality LE (<=) constraints
+        for i in param.get_ieq_le_con()
             zero_lambda[i] = 1.0
             param.eval_h(x, :Values, hrows, hcols, 0.0, zero_lambda, hvalues)
             hes_g = sparse(hrows, hcols, hvalues)
@@ -180,7 +189,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             zero_lambda[i] = 0.0
         end
 
-        ret  = Array(ret)
+        ret = Array(ret)
     end
 
     # g = x -> ReverseDiff.gradient(f,x)
@@ -314,9 +323,11 @@ end
 function createProblem(n, x_L, x_U,
     m, g_L, g_U,
     nele_jac, nele_hess,
-    eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h = nothing)
+    eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h,
+    get_eq_con, get_ieq_le_con, get_ieq_ge_con)
 
-    param = Params(eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h)
+    param = Params(eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h,
+                   get_eq_con, get_ieq_le_con, get_ieq_ge_con)
     param.maxiter = 1000# maximum ALM iterations
     param.lambda = ones(Float64,10)
     param.mu = 1.0
@@ -357,35 +368,5 @@ model = Model(with_optimizer(alm.Optimizer))
 @NLconstraint(model, x[4] <= 5.0)
 @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
 set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
-# @show model.inner
-
-# @show model
-# expr1 = objective_function_string(REPLMode, model)
-# expr2 = objective_function_string(IJuliaMode, model)
-# list = constraints_string(REPLMode, model)
-# model.moi_backend.optimizer.model.inner.eval_f = expr1
 optimize!(model)
-
-# @show expr1
-# @show typeof(expr1)
-# @show expr2
-# @show typeof(expr2)
-# @show list
-# @show typeof(list)
-
-# @show model.nner
 value.(x)
-# param = alm.Params()
-# param.maxiter = 1000# maximum ALM iterations
-# param.lambda = ones(Float64,10)
-# param.mu = 1.0
-# # param.x0 = [1.000, 4.743, 3.821, 1.379]
-# param.x0 = [1.000, 5.0, 5.0, 1.0]
-# param.al_epsilon = 1e-3
-# param.newton_epsilon = 1e-7
-# param.model = model
-# # - Solving the problem 
-# x0 = param.x0
-# println("lagrangian: ", alm.lagrangian(x0, zeros(Float64,10), 10000.0)[1](x0))
-# println("objective: ", x0[1] * x0[4] * (x0[1] + x0[2] + x0[3]) + x0[3] )
-# x, lambda = alm.solve(param; verbose = false)
