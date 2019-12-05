@@ -151,6 +151,9 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             hes_g = sparse(hrows, hcols, hvalues)
             ret1 = (-lambda[i] + mu*g[i]) * trtofull(hes_g)
             ret2 = mu * jac_g[i,:] * jac_g[i,:]'
+            # @show size(ret1)
+            # @show size(ret2)
+            # @show size(trtofull(hess_f))
             ret = ret1 .+ ret2 .+ trtofull(hess_f)
             zero_lambda[i] = 0.0
         end
@@ -213,6 +216,7 @@ function solveProblem(param;verbose = false)
     maxiter = param.maxiter
     lambda = param.lambda
     mu = param.mu
+    @show param.x
     x = param.x
     k = 0
     constraints = similar(lambda)
@@ -239,7 +243,7 @@ function solveProblem(param;verbose = false)
             println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
             println("Value of the Constraint norm: ", violations(x, constraints, param))
             println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
-            println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
+            println("objective: ", param.eval_f(x))
         end
     end
     if verbose == false
@@ -251,7 +255,7 @@ function solveProblem(param;verbose = false)
         println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
         println("Value of the Constraint norm: ", violations(x, constraints, param))
         println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
-        println("objective: ", x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] )
+        println("objective: ", param.eval_f(x) )
     end
     param.status = :LOCALLY_SOLVED
     param.x = x
@@ -316,16 +320,11 @@ function createProblem(n, x_L, x_U,
 
     param = Params(eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h,
                    get_eq_con, get_ieq_le_con, get_ieq_ge_con)
-    param.maxiter = 1000# maximum ALM iterations
-    param.lambda = ones(Float64,10)
+    param.maxiter = 10000 # maximum ALM iterations
+    param.lambda = ones(Float64,param.num_constraints)
     param.mu = 1.0
-    # param.x0 = [1.000, 4.743, 3.821, 1.379]
-    param.x = [1.000, 5.0, 5.0, 1.0]
-    param.al_epsilon = 1e-3
-    param.newton_epsilon = 1e-7
-    # param.model = model
-    # - Solving the problem 
-    x = param.x
+    param.al_epsilon = 1e-6
+    param.newton_epsilon = 1e-9
     return param
 end
 
@@ -337,24 +336,28 @@ using .alm
 using Ipopt
 
 using JuMP
-# - Augmented Lagrangian minimization
-#  This file is an example of how to use the augmented Lagragngian algorithm
-#  on a typical example
-# - Parameters for test
+
 # model = Model(with_optimizer(Ipopt.Optimizer))
 model = Model(with_optimizer(alm.Optimizer))
+# @variable(model, x[1:5])
 @variable(model, x[1:4])
+# @NLconstraint(model, sum(x[i]^2 for i in 1:5) == 40.0)
+# @NLconstraint(model, prod(x[i] for i in 1:5) >= 25.0)
 @NLconstraint(model, sum(x[i]^2 for i in 1:4) == 40.0)
 @NLconstraint(model, prod(x[i] for i in 1:4) >= 25.0)
 @NLconstraint(model, x[1] >= 1.0)
 @NLconstraint(model, x[2] >= 1.0)
 @NLconstraint(model, x[3] >= 1.0)
 @NLconstraint(model, x[4] >= 1.0)
+# @NLconstraint(model, x[5] >= 1.0)
 @NLconstraint(model, x[1] <= 5.0)
 @NLconstraint(model, x[2] <= 5.0)
 @NLconstraint(model, x[3] <= 5.0)
 @NLconstraint(model, x[4] <= 5.0)
+# @NLconstraint(model, x[5] <= 5.0)
+# @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] + x[5])
 @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
+# set_start_value.(x, [1.0, 5.0, 5.0, 1.0, 1.0])
 set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
 optimize!(model)
 value.(x)
