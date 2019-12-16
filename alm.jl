@@ -99,7 +99,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
     function moig(x)
         grad_f = zeros(Float64, size(x))
         param.eval_grad_f(x,grad_f)
-        ret = grad_f
+        ret = copy(grad_f)
         njacobian = param.eval_jac_g(nothing, :Structure, nothing, nothing, nothing)
         rows = zeros(Float64, njacobian)
         cols = zeros(Float64, njacobian)
@@ -108,28 +108,43 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         jac_g = sparse(rows, cols, values)
         g = zeros(Float64, param.num_constraints)
         param.eval_g(x, g)
-
+        ret1 = zeros(Float64, size(x))
+        ret2 = zeros(Float64, size(x))
+        ret3 = zeros(Float64, size(x))
         for i in param.get_eq_con()
             ret += (-lambda[i] + mu*g[i]) * jac_g[i,:]
+            ret1 += (-lambda[i] + mu*g[i]) * jac_g[i,:]
         end
         for i in param.get_ieq_ge_con()
             ret += grad_psi(g[i], lambda[i], mu) * jac_g[i,:]
+            ret2 += grad_psi(g[i], lambda[i], mu) * jac_g[i,:]
         end
         for i in param.get_ieq_le_con()
             ret += -grad_psi(-g[i], lambda[i], mu) * jac_g[i,:]
+            ret3 += -grad_psi(-g[i], lambda[i], mu) * jac_g[i,:]
         end
-        ret
+        # @show norm(grad_f)
+        # @show norm(ret1)
+        # @show norm(ret2)
+        # @show norm(ret3)
+        ret4 = grad_f + ret1 + ret2 + ret3
+        # @show norm(ret4)
+        # @show norm(ret)
+        ret4
     end
 
     function moih(x)
 
         # Hessian
         nhessian = param.eval_h(nothing, :Structure, nothing, nothing, nothing, nothing, nothing)
+        # @show nhessian
         hrows = zeros(Float64, nhessian)
         hcols = zeros(Float64, nhessian)
         hvalues = zeros(Float64, nhessian)
         zero_lambda = zeros(Float64, param.num_constraints)
         param.eval_h(x, :Values, hrows, hcols, 1.0, zero_lambda, hvalues)
+        # @show hrows
+        # @show hcols
         hess_f = sparse(hrows, hcols, hvalues)
 
         # Jacobian
@@ -143,7 +158,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
         # Function
         g = zeros(Float64, param.num_constraints)
         param.eval_g(x, g)
-        ret = 0
+        ret = zeros(Float64, size(hess_f,1), size(hess_f, 2))
         # Equality constraints
         for i in param.get_eq_con()
             zero_lambda[i] = 1.0
@@ -151,12 +166,14 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             hes_g = sparse(hrows, hcols, hvalues)
             ret1 = (-lambda[i] + mu*g[i]) * trtofull(hes_g)
             ret2 = mu * jac_g[i,:] * jac_g[i,:]'
+            # @show size(ret)
             # @show size(ret1)
             # @show size(ret2)
             # @show size(trtofull(hess_f))
-            ret = ret1 .+ ret2 .+ trtofull(hess_f)
+            ret = ret + ret1 + ret2 + trtofull(hess_f)
             zero_lambda[i] = 0.0
         end
+        # @show "here2"
 
         # Inequality GE (>=) constraints
         for i in param.get_ieq_ge_con()
@@ -168,6 +185,7 @@ function lagrangian(x::Vector{Float64},lambda::Vector{Float64},mu::Float64, para
             ret = ret .+ ret1 .+ ret2
             zero_lambda[i] = 0.0
         end
+        # @show "here3"
 
         # Inequality LE (<=) constraints
         for i in param.get_ieq_le_con()
@@ -194,13 +212,60 @@ function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float6
     valueNG = norm(g(x))
 end
 
+function wolfe(xold, f, g, d);
+    beta = 10^-4
+    gamma = 0.99
+    lambda = 50
+    alpha_r = Inf
+    alpha_l = 0.0
+    alpha = 1.0
+    k=0
+    maxit = 200
+    f_old = f(xold)
+    g_old = g(xold)
+    while k<maxit 
+        f_new = f(xold + alpha*d)
+        g_new = g(xold + alpha*d)
+        wolfe_1 = f_new > f_old + alpha*beta*g_old'*d
+        wolfe_2 = g_new'*d < gamma*g_old'*d
+        if wolfe_1 == 0 && wolfe_2==0
+            return alpha
+        end
+        # Check 1st Wolfe condition
+        if wolfe_1 == true 
+            alpha_r = alpha
+            alpha = (alpha_l + alpha_r)/2;
+        end
+        # Check 2nd Wolfe condition
+        if wolfe_2 == true && wolfe_1== false
+            alpha_l = alpha
+            if alpha_r==Inf
+                alpha = lambda*alpha
+            else
+                alpha = (alpha_l + alpha_r)/2;
+            end
+        end
+        k = k+1;
+    end
+    @show alpha
+    alpha
+end
+
 function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param::Params; verbose = true)
     f,g,h = lagrangian(x, lambda, mu, param)
     res = 1e16
     iter = 0
-    while norm(g(x)) > param.newton_epsilon
-        new_x = x - inv(h(x))*g(x)
+    alpha = 1.0
+    while norm(g(x)) > param.newton_epsilon && iter < 1000
+        # @show size(g(x))
+        # @show size(h(x))
+        d = inv(h(x))*g(x)
+        alpha  = wolfe(x, f, g, -d);
+        new_x = x - alpha*d
         res = norm(new_x - x)
+        # @show norm(g(x))
+        # @show res
+        # @show iter
         x = new_x
         iter+=1
     end
@@ -211,7 +276,7 @@ function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param:
     x
 end
 
-function solveProblem(param;verbose = false)
+function solveProblem(param;verbose = true)
     # - Initialization
     maxiter = param.maxiter
     lambda = param.lambda
@@ -220,16 +285,24 @@ function solveProblem(param;verbose = false)
     x = param.x
     k = 0
     constraints = similar(lambda)
+    eta = 1e-5
     # - Iterations
-    while norm(lagrangian(x, lambda, mu, param)[2](x)) > param.al_epsilon && k<maxiter
+    while (norm(lagrangian(x, lambda, mu, param)[2](x)) > param.al_epsilon || norm(violations(x, constraints, param)) > 1e-5) && k<maxiter
         # - Newton 
         x = newton(x, lambda, mu, param, verbose=verbose)
         
         # - Updating dual variables and precision of the linesearch
         param.eval_g(x, constraints)
         lambda = update_lambda!(lambda, mu, x, constraints, param)
-        if norm(violations(x, constraints, param)) < 1e-5
-            mu = mu * 10.0
+        if norm(violations(x, constraints, param)) < eta
+            if mu < 1000
+                mu = mu * 10.0
+            end
+            if eta > 1e-5
+                eta = eta / 10.0
+            end
+        else
+            eta = eta * 10.0
         end
         k = k+1
         
@@ -238,6 +311,7 @@ function solveProblem(param;verbose = false)
             println("")
             println("Iteration: ", k)
             println("mu: ", mu)
+            println("eta: ", eta)
             println("lambda = ", lambda)
             println("x= ", x)
             println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
@@ -355,9 +429,12 @@ model = Model(with_optimizer(alm.Optimizer))
 @NLconstraint(model, x[3] <= 5.0)
 @NLconstraint(model, x[4] <= 5.0)
 # @NLconstraint(model, x[5] <= 5.0)
-# @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] + x[5])
+# @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] + x[5]^2)
 @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
 # set_start_value.(x, [1.0, 5.0, 5.0, 1.0, 1.0])
+# set_start_value.(x, [1.0, 5.0, 3.26, 0.99, 1.53])
+# set_start_value.(x, [4.42, 4.32, 1.34, 0.0, 0.0])
+# set_start_value.(x, [1.0, 4.74, 3.82, 1.38])
 set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
 optimize!(model)
 value.(x)
