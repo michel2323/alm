@@ -1,5 +1,5 @@
 .PHONY: test
 
 test:
-	@echo "Testing power flow module"
+	@echo "Testing alm module"
 	julia --project=./ test/hs071.jl

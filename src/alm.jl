@@ -212,9 +212,8 @@ function normGradientLag(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float6
     valueNG = norm(g(x))
 end
 
-function wolfe(xold, f, g, d);
+function wolfe(xold, f, g, d, gamma);
     beta = 10^-4
-    gamma = 0.99
     lambda = 50
     alpha_r = Inf
     alpha_l = 0.0
@@ -247,7 +246,6 @@ function wolfe(xold, f, g, d);
         end
         k = k+1;
     end
-    @show alpha
     alpha
 end
 
@@ -256,22 +254,50 @@ function newton(x::Vector{Float64}, lambda::Vector{Float64}, mu::Float64, param:
     res = 1e16
     iter = 0
     alpha = 1.0
-    while norm(g(x)) > param.newton_epsilon && iter < 1000
-        # @show size(g(x))
-        # @show size(h(x))
-        d = inv(h(x))*g(x)
-        alpha  = wolfe(x, f, g, -d);
+    failed = false
+    while norm(g(x)) > param.newton_epsilon && iter < 25
+        hess = h(x)
+        failed = false
+        try
+            global invh = inv(hess)
+        catch e
+            try
+                global invh = inv(hess + (norm(g(x)) * sparse(I,size(hess,1), size(hess,2))))
+            catch e
+                @show norm(g(x))
+                @show hess
+                error("Singular after regularization")
+                failed = true
+            end
+        end
+        if any(isnan.(invh)) && failed == false
+            global invh = inv(hess + (norm(g(x)) * sparse(I,size(hess,1), size(hess,2))))
+            if any(isnan.(invh))
+                @show norm(g(x))
+                @show hess
+                error("NaNs in inverted Hessian")
+                failed = true
+            end
+        end
+        if !failed
+            d = invh*g(x)
+            alpha  = wolfe(x, f, g, -d, 0.99);
+        else
+            # Do steepest descent
+            d = Array(g(x)*f(x))
+            alpha  = wolfe(x, f, g, -d, 0.1);
+        end
         new_x = x - alpha*d
         res = norm(new_x - x)
-        # @show norm(g(x))
-        # @show res
-        # @show iter
         x = new_x
         iter+=1
     end
     if verbose == true
         println("Newton iterations ", iter)
         println("Gradient ", norm(g(x)))
+        if failed == true
+            println("Used steepest descent")
+        end
     end
     x
 end
@@ -312,11 +338,11 @@ function solveProblem(param;verbose = true)
             println("Iteration: ", k)
             println("mu: ", mu)
             println("eta: ", eta)
-            println("lambda = ", lambda)
-            println("x= ", x)
-            println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
-            println("Value of the Constraint norm: ", violations(x, constraints, param))
-            println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
+            # println("lambda = ", lambda)
+            # println("x= ", x)
+            println("Norm of Lagrangian gradient: ", normGradientLag(x, lambda, mu, param))
+            println("Norm of constraint violations: ", norm(violations(x, constraints, param)))
+            # println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
             println("objective: ", param.eval_f(x))
         end
     end
@@ -328,7 +354,7 @@ function solveProblem(param;verbose = true)
         println("x= ", x)
         println("Value of the Lagrangian Gradient norm: ", normGradientLag(x, lambda, mu, param))
         println("Value of the Constraint norm: ", violations(x, constraints, param))
-        println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
+        # println("Hessian: ", lagrangian(x, lambda, mu, param)[3](x))
         println("objective: ", param.eval_f(x) )
     end
     param.status = :LOCALLY_SOLVED
@@ -397,44 +423,10 @@ function createProblem(n, x_L, x_U,
     param.maxiter = 10000 # maximum ALM iterations
     param.lambda = ones(Float64,param.num_constraints)
     param.mu = 1.0
-    param.al_epsilon = 1e-6
-    param.newton_epsilon = 1e-9
+    param.al_epsilon = 1e-4
+    param.newton_epsilon = 1e-8
     return param
 end
 
 include("MOI_wrapper.jl")
 end
-
-using .alm
-
-using Ipopt
-
-using JuMP
-
-# model = Model(with_optimizer(Ipopt.Optimizer))
-model = Model(with_optimizer(alm.Optimizer))
-# @variable(model, x[1:5])
-@variable(model, x[1:4])
-# @NLconstraint(model, sum(x[i]^2 for i in 1:5) == 40.0)
-# @NLconstraint(model, prod(x[i] for i in 1:5) >= 25.0)
-@NLconstraint(model, sum(x[i]^2 for i in 1:4) == 40.0)
-@NLconstraint(model, prod(x[i] for i in 1:4) >= 25.0)
-@NLconstraint(model, x[1] >= 1.0)
-@NLconstraint(model, x[2] >= 1.0)
-@NLconstraint(model, x[3] >= 1.0)
-@NLconstraint(model, x[4] >= 1.0)
-# @NLconstraint(model, x[5] >= 1.0)
-@NLconstraint(model, x[1] <= 5.0)
-@NLconstraint(model, x[2] <= 5.0)
-@NLconstraint(model, x[3] <= 5.0)
-@NLconstraint(model, x[4] <= 5.0)
-# @NLconstraint(model, x[5] <= 5.0)
-# @NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3] + x[5]^2)
-@NLobjective(model, Min, x[1] * x[4] * (x[1] + x[2] + x[3]) + x[3])
-# set_start_value.(x, [1.0, 5.0, 5.0, 1.0, 1.0])
-# set_start_value.(x, [1.0, 5.0, 3.26, 0.99, 1.53])
-# set_start_value.(x, [4.42, 4.32, 1.34, 0.0, 0.0])
-# set_start_value.(x, [1.0, 4.74, 3.82, 1.38])
-set_start_value.(x, [1.0, 5.0, 5.0, 1.0])
-optimize!(model)
-value.(x)
