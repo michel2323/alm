@@ -19,5 +19,5 @@ end
 show(timeroutput)
 end
 
-case="examples/acopf/case9"
+case="examples/acopf/data/case9"
 main()
