@@ -1,0 +1,23 @@
+include("acopf_alm.jl")
+using TimerOutputs
+timeroutput = TimerOutput()
+
+function main()
+
+@timeit timeroutput "load" begin
+  opfdata = opf_loaddata(case)
+end
+@timeit timeroutput "model" begin
+  opfmodel, Pg, Qg, Vm, Va = acopf_model(opfdata)
+end
+@timeit timeroutput "solve" begin
+  opfmodel,status = acopf_solve(opfmodel,opfdata, Pg, Qg, Vm, Va)
+end
+  if status==MOI.LOCALLY_SOLVED
+    acopf_outputAll(opfmodel,opfdata, Pg, Qg, Vm, Va)
+  end
+show(timeroutput)
+end
+
+case="examples/acopf/data/case9"
+main()
